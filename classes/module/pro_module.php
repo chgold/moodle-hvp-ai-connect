@@ -224,12 +224,23 @@ class pro_module extends module_base {
     }
 
     protected function execute_importContent(array $params, array $context = []): array {
+        global $CFG;
         $id = $this->clean_required($params, 'h5pactivityid', PARAM_INT);
         $url = $this->clean_required($params, 'package_url', PARAM_URL);
         $this->writable_activity($id, (int) ($context['userid'] ?? 0));
         $cm = get_coursemodule_from_instance('h5pactivity', $id, 0, false, MUST_EXIST);
         $ctx = \context_module::instance($cm->id);
 
+        // Moodle lazy-loads filelib.php; require it before calling download_file_content().
+        // The function routes through curl_security_helper which blocks private IPs by default (SSRF-safe).
+        require_once($CFG->libdir . '/filelib.php');
+        // Explicit SSRF check for clear error messages (curl_security_helper
+        // only logs quietly; the agent needs an actionable reason).
+        $securityhelper = new \core\files\curl_security_helper();
+        if ($securityhelper->url_is_blocked($url)) {
+            return ['h5pactivityid' => $id, 'imported' => false,
+                'note' => 'URL rejected: ' . $securityhelper->get_blocked_url_string()];
+        }
         $contents = @\download_file_content($url);
         if ($contents === false || $contents === null || $contents === '') {
             return ['h5pactivityid' => $id, 'imported' => false, 'note' => 'Could not download package from URL'];
@@ -249,12 +260,23 @@ class pro_module extends module_base {
     }
 
     protected function execute_uploadMediaAsset(array $params, array $context = []): array {
+        global $CFG;
         $id = $this->clean_required($params, 'h5pactivityid', PARAM_INT);
         $url = $this->clean_required($params, 'media_url', PARAM_URL);
         $this->writable_activity($id, (int) ($context['userid'] ?? 0));
         $cm = get_coursemodule_from_instance('h5pactivity', $id, 0, false, MUST_EXIST);
         $ctx = \context_module::instance($cm->id);
 
+        // Moodle lazy-loads filelib.php; require it before calling download_file_content().
+        // The function routes through curl_security_helper which blocks private IPs by default (SSRF-safe).
+        require_once($CFG->libdir . '/filelib.php');
+        // Explicit SSRF check for clear error messages (curl_security_helper
+        // only logs quietly; the agent needs an actionable reason).
+        $securityhelper = new \core\files\curl_security_helper();
+        if ($securityhelper->url_is_blocked($url)) {
+            return ['h5pactivityid' => $id, 'uploaded' => false,
+                'note' => 'URL rejected: ' . $securityhelper->get_blocked_url_string()];
+        }
         $contents = @\download_file_content($url);
         if ($contents === false || $contents === null || $contents === '') {
             return ['h5pactivityid' => $id, 'uploaded' => false, 'note' => 'Could not download media from URL'];
