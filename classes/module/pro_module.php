@@ -29,7 +29,6 @@ use local_aiconnect\module\module_base;
 defined('MOODLE_INTERNAL') || die();
 
 class pro_module extends module_base {
-
     /** @var string Tool namespace prefix. */
     protected string $module_name = 'hvp_pro';
 
@@ -95,6 +94,60 @@ class pro_module extends module_base {
         $activity = $DB->get_record('h5pactivity', ['id' => $id], '*', MUST_EXIST);
         require_capability('moodle/course:manageactivities', \context_course::instance((int) $activity->course), $userid);
         return $activity;
+    }
+
+    /** Allowed media extensions for uploadMediaAsset (no SVG, no scripts/HTML). */
+    private const MEDIA_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp3', 'm4a', 'ogg', 'wav', 'mp4', 'webm'];
+
+    /**
+     * Upload size limit for a course, as Moodle's own file picker applies it.
+     *
+     * @param int $courseid Course id.
+     * @param int $userid   Acting user.
+     * @return int Max bytes (a 512 MB hard ceiling for users without a limit).
+     */
+    private function course_max_bytes(int $courseid, int $userid): int {
+        global $CFG;
+        $course = get_course($courseid);
+        $max = get_user_max_upload_file_size(\context_course::instance($courseid), $CFG->maxbytes, $course->maxbytes, 0, $userid);
+        return ($max > 0) ? (int) $max : 512 * 1024 * 1024;
+    }
+
+    /**
+     * Download an agent-supplied URL through Moodle's \curl (curl_security_helper
+     * checks host/port on every redirect hop) with a timeout and a size cap.
+     *
+     * @param string $url      Agent-supplied URL.
+     * @param int    $maxbytes Size cap.
+     * @return array [string|null $contents, string|null $error]
+     */
+    private function fetch_limited(string $url, int $maxbytes): array {
+        global $CFG;
+        require_once($CFG->libdir . '/filelib.php');
+        $securityhelper = new \core\files\curl_security_helper();
+        if ($securityhelper->url_is_blocked($url)) {
+            return [null, 'URL rejected: ' . $securityhelper->get_blocked_url_string()];
+        }
+        $tmp = make_request_directory() . '/download';
+        $c = new \curl();
+        $c->setopt([
+            'CURLOPT_TIMEOUT' => 60,
+            'CURLOPT_CONNECTTIMEOUT' => 20,
+            'CURLOPT_MAXFILESIZE' => $maxbytes,
+            'CURLOPT_NOPROGRESS' => false,
+            'CURLOPT_PROGRESSFUNCTION' => static fn($ch, $dltotal, $dlnow) => ($dlnow > $maxbytes) ? 1 : 0,
+        ]);
+        $ok = $c->download_one($url, null, ['filepath' => $tmp]);
+        $code = (int) ($c->get_info()['http_code'] ?? 0);
+        if ($ok !== true || $c->get_errno() || $code !== 200 || !is_file($tmp)) {
+            return [null, 'Could not download from URL (or it exceeds the ' . display_size($maxbytes) . ' upload limit)'];
+        }
+        if (filesize($tmp) > $maxbytes) {
+            return [null, 'File exceeds the ' . display_size($maxbytes) . ' upload limit for this course'];
+        }
+        $contents = (string) file_get_contents($tmp);
+        @unlink($tmp);
+        return [$contents === '' ? null : $contents, $contents === '' ? 'Downloaded file is empty' : null];
     }
 
     protected function execute_createContent(array $params, array $context = []): array {
@@ -180,6 +233,9 @@ class pro_module extends module_base {
         $source = $this->writable_activity($id, (int) ($context['userid'] ?? 0));
         $newname = (string) $this->clean_optional($params, 'name', PARAM_TEXT, $source->name . ' (copy)');
         $sourcecm = get_coursemodule_from_instance('h5pactivity', $id, 0, false, MUST_EXIST);
+        $userid = (int) ($context['userid'] ?? 0);
+        require_capability('mod/h5pactivity:addinstance', \context_course::instance((int) $source->course), $userid);
+        $maxbytes = $this->course_max_bytes((int) $source->course, $userid);
 
         $transaction = $DB->start_delegated_transaction();
         try {
@@ -208,6 +264,9 @@ class pro_module extends module_base {
             $fs = get_file_storage();
             $srcctx = \context_module::instance($sourcecm->id);
             foreach ($fs->get_area_files($srcctx->id, 'mod_h5pactivity', 'package', 0, 'id', false) as $f) {
+                if ($f->get_filesize() > $maxbytes) {
+                    throw new \moodle_exception('maxbytesfile', 'error', '', ['file' => $f->get_filename(), 'size' => display_size($maxbytes)]);
+                }
                 $fs->create_file_from_storedfile([
                     'contextid' => $newctx->id, 'component' => 'mod_h5pactivity',
                     'filearea' => 'package', 'itemid' => 0,
@@ -230,20 +289,16 @@ class pro_module extends module_base {
         $this->writable_activity($id, (int) ($context['userid'] ?? 0));
         $cm = get_coursemodule_from_instance('h5pactivity', $id, 0, false, MUST_EXIST);
         $ctx = \context_module::instance($cm->id);
+        $userid = (int) ($context['userid'] ?? 0);
+        require_capability('moodle/course:manageactivities', $ctx, $userid);
 
-        // Moodle lazy-loads filelib.php; require it before calling download_file_content().
-        // The function routes through curl_security_helper which blocks private IPs by default (SSRF-safe).
-        require_once($CFG->libdir . '/filelib.php');
-        // Explicit SSRF check for clear error messages (curl_security_helper
-        // only logs quietly; the agent needs an actionable reason).
-        $securityhelper = new \core\files\curl_security_helper();
-        if ($securityhelper->url_is_blocked($url)) {
-            return ['h5pactivityid' => $id, 'imported' => false,
-                'note' => 'URL rejected: ' . $securityhelper->get_blocked_url_string()];
+        [$contents, $error] = $this->fetch_limited($url, $this->course_max_bytes((int) $cm->course, $userid));
+        if ($contents === null) {
+            return ['h5pactivityid' => $id, 'imported' => false, 'note' => $error];
         }
-        $contents = @\download_file_content($url);
-        if ($contents === false || $contents === null || $contents === '') {
-            return ['h5pactivityid' => $id, 'imported' => false, 'note' => 'Could not download package from URL'];
+        // An .h5p package is a ZIP archive — refuse anything else.
+        if (strncmp($contents, "PK\x03\x04", 4) !== 0) {
+            return ['h5pactivityid' => $id, 'imported' => false, 'note' => 'The URL did not return an .h5p (ZIP) package'];
         }
         $fs = get_file_storage();
         $fs->delete_area_files($ctx->id, 'mod_h5pactivity', 'package', 0);
@@ -266,24 +321,28 @@ class pro_module extends module_base {
         $this->writable_activity($id, (int) ($context['userid'] ?? 0));
         $cm = get_coursemodule_from_instance('h5pactivity', $id, 0, false, MUST_EXIST);
         $ctx = \context_module::instance($cm->id);
+        $userid = (int) ($context['userid'] ?? 0);
+        require_capability('moodle/course:manageactivities', $ctx, $userid);
 
-        // Moodle lazy-loads filelib.php; require it before calling download_file_content().
-        // The function routes through curl_security_helper which blocks private IPs by default (SSRF-safe).
-        require_once($CFG->libdir . '/filelib.php');
-        // Explicit SSRF check for clear error messages (curl_security_helper
-        // only logs quietly; the agent needs an actionable reason).
-        $securityhelper = new \core\files\curl_security_helper();
-        if ($securityhelper->url_is_blocked($url)) {
-            return ['h5pactivityid' => $id, 'uploaded' => false,
-                'note' => 'URL rejected: ' . $securityhelper->get_blocked_url_string()];
+        [$contents, $error] = $this->fetch_limited($url, $this->course_max_bytes((int) $cm->course, $userid));
+        if ($contents === null) {
+            return ['h5pactivityid' => $id, 'uploaded' => false, 'note' => $error];
         }
-        $contents = @\download_file_content($url);
-        if ($contents === false || $contents === null || $contents === '') {
-            return ['h5pactivityid' => $id, 'uploaded' => false, 'note' => 'Could not download media from URL'];
-        }
-        $filename = (string) $this->clean_optional($params, 'filename', PARAM_FILE,
-            basename(\parse_url($url, PHP_URL_PATH) ?: 'asset.bin'));
+        $filename = (string) $this->clean_optional(
+            $params,
+            'filename',
+            PARAM_FILE,
+            basename(\parse_url($url, PHP_URL_PATH) ?: 'asset.bin')
+        );
         $filename = \clean_param($filename, PARAM_FILE) ?: 'asset.bin';
+        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+        $mime = (string) (new \finfo(FILEINFO_MIME_TYPE))->buffer($contents);
+        $mediamime = preg_match('#^(image|audio|video)/#', $mime) && strpos($mime, 'svg') === false;
+        if (!in_array($ext, self::MEDIA_EXTENSIONS, true) || !$mediamime) {
+            return ['h5pactivityid' => $id, 'uploaded' => false,
+                'note' => 'Only image/audio/video media (' . implode(', ', self::MEDIA_EXTENSIONS) . ') can be uploaded; got '
+                    . ($ext ?: 'no extension') . ' / ' . $mime];
+        }
         $fs = get_file_storage();
         $fs->create_file_from_string([
             'contextid' => $ctx->id, 'component' => 'mod_h5pactivity', 'filearea' => 'media',

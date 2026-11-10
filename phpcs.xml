@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<ruleset name="moodle-teacher-ai-connect">
+    <description>Coding standard for local_aiconnectteacher (Moodle plugin).</description>
+
+    <!--
+        Moodle has its own coding standard (moodle/local_codechecker) which is
+        not packaged with PHP_CodeSniffer. Until it's installed here, we use
+        PSR-12 as a lightweight baseline. The Moodle plugin reviewer at
+        plugins.moodle.org runs the official Moodle checker separately.
+
+        The exclusions below are PSR-1/PSR-2/PSR-12 rules that directly
+        contradict the Moodle coding style
+        (https://moodledev.io/general/development/policies/codingstyle);
+        following them would make the plugin non-compliant with Moodle.
+    -->
+    <rule ref="PSR12">
+        <!-- Moodle requires GPL header comment block — PSR-12 doesn't care -->
+        <exclude name="PSR12.Files.FileHeader.SpacingAfterBlock"/>
+        <!-- Moodle uses `global $DB` etc. — long lines are unavoidable in calls -->
+        <exclude name="Generic.Files.LineLength"/>
+
+        <!-- Moodle: opening braces of classes and functions stay on the same line -->
+        <exclude name="Squiz.Functions.MultiLineFunctionDeclaration.BraceOnSameLine"/>
+        <exclude name="PSR2.Classes.ClassDeclaration.OpenBraceNewLine"/>
+        <!-- Moodle: method names are lowercase_with_underscores -->
+        <exclude name="PSR1.Methods.CamelCapsMethodName.NotCamelCaps"/>
+        <!-- Moodle: class names are lowercase frankenstyle (e.g. token_list) -->
+        <exclude name="Squiz.Classes.ValidClassName.NotCamelCaps"/>
+        <!-- Moodle: each file starts with require config.php or the MOODLE_INTERNAL guard -->
+        <exclude name="PSR1.Files.SideEffects.FoundWithSymbols"/>
+        <!-- Moodle: `else if` (two words) is the required form, not `elseif` -->
+        <exclude name="PSR2.ControlStructures.ElseIfDeclaration.NotAllowed"/>
+    </rule>
+
+    <!-- Scan PHP only, skip vendored / generated / Moodle-installed dirs -->
+    <arg name="extensions" value="php"/>
+    <exclude-pattern>*/vendor/*</exclude-pattern>
+    <exclude-pattern>*/node_modules/*</exclude-pattern>
+    <exclude-pattern>*/tests/*</exclude-pattern>
+    <exclude-pattern>*/dist/*</exclude-pattern>
+    <exclude-pattern>*/lang/*</exclude-pattern>
+</ruleset>
