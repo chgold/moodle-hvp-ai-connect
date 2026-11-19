@@ -13,8 +13,12 @@ defined('MOODLE_INTERNAL') || die();
 
 if ($hassiteconfig) {
     $settings = new admin_settingpage('local_aiconnecthvp', get_string('pluginname', 'local_aiconnecthvp'));
-    $settings->add(new admin_setting_configtext('local_aiconnecthvp/license_key',
+    $settings->add(new admin_setting_configtext(
+        'local_aiconnecthvp/license_key',
         get_string('license_key', 'local_aiconnecthvp'),
-        get_string('license_key_desc', 'local_aiconnecthvp'), '', PARAM_RAW_TRIMMED));
+        get_string('license_key_desc', 'local_aiconnecthvp'),
+        '',
+        PARAM_RAW_TRIMMED
+    ));
     $ADMIN->add('localplugins', $settings);
 }

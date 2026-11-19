@@ -23,8 +23,8 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component    = 'local_aiconnecthvp';
-$plugin->version      = 2026111000;
+$plugin->version      = 2026111900;
 $plugin->requires     = 2023100900;
 $plugin->maturity     = MATURITY_STABLE;
-$plugin->release      = '1.0.1';
+$plugin->release      = '1.1.0';
 $plugin->dependencies = ['local_aiconnect' => 2026070300];

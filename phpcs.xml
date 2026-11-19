@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
-<ruleset name="moodle-teacher-ai-connect">
-    <description>Coding standard for local_aiconnectteacher (Moodle plugin).</description>
+<ruleset name="moodle-hvp-ai-connect">
+    <description>Coding standard for local_aiconnecthvp (Moodle plugin).</description>
 
     <!--
         Moodle has its own coding standard (moodle/local_codechecker) which is
