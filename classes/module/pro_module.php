@@ -415,8 +415,11 @@ class pro_module extends module_base {
         ]);
         $ok = $c->download_one($url, null, ['filepath' => $tmp]);
         $code = (int) ($c->get_info()['http_code'] ?? 0);
+        if (in_array((int) $c->get_errno(), [42, 63], true) || (is_file($tmp) && filesize($tmp) > $maxbytes)) {
+            return [null, 'File exceeds the ' . display_size($maxbytes) . ' upload limit for this course'];
+        }
         if ($ok !== true || $c->get_errno() || $code !== 200 || !is_file($tmp)) {
-            return [null, 'Could not download from URL (or it exceeds the ' . display_size($maxbytes) . ' upload limit)'];
+            return [null, 'Could not download the package from the URL (HTTP ' . $code . ($c->get_errno() ? ', ' . $c->error : '') . ')'];
         }
         if (filesize($tmp) > $maxbytes) {
             return [null, 'File exceeds the ' . display_size($maxbytes) . ' upload limit for this course'];
