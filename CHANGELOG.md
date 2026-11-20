@@ -1,5 +1,17 @@
 # Changelog — local_aiconnecthvp
 
+## [1.1.1] — 2026-11-20
+
+### Security
+- **The agent can no longer approve its own deletion.** `deleteContent`,
+  `deleteUserAttempt`, `resetAllAttempts`, `deleteContentBankItem` and
+  `deleteLibrary` used an agent-side `confirm=true` flag; they now go through
+  the core user confirmation flow (core 2.2.7, `user-confirm-v1`): HTTP 202 and
+  a sentence with the activity / user / item name, run only after the user
+  confirms on the AI actions page. The `confirm` argument is gone from the
+  schema. Requires AI Connect for Moodle 2.2.7; on an older core these tools
+  refuse (`core_update_required`).
+
 ## [1.1.0] — 2026-11-19
 
 ### Added (Deep Research round 2026-11-19)

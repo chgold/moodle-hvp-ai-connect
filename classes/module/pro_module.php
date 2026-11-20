@@ -38,6 +38,7 @@
 namespace local_aiconnecthvp\module;
 
 use local_aiconnect\module\module_base;
+use local_aiconnecthvp\local\confirm_text as ConfirmText;
 
 defined('MOODLE_INTERNAL') || die();
 
@@ -54,6 +55,9 @@ class pro_module extends module_base {
     /** Grading methods of mod_h5pactivity (manager::GRADE*). */
     private const GRADEMETHODS = [0 => 'manual', 1 => 'highest', 2 => 'average', 3 => 'last', 4 => 'first'];
 
+    /** @var array<int,string> Tools that need the user's confirmation (user-confirm-v1). */
+    public const GATED_TOOLS = ['deleteContent', 'deleteUserAttempt', 'resetAllAttempts', 'deleteContentBankItem', 'deleteLibrary'];
+
     /**
      * Register one tool with the common capability key.
      *
@@ -68,19 +72,41 @@ class pro_module extends module_base {
         if ($required) {
             $schema['required'] = $required;
         }
-        $this->register_tool($name, [
+        $config = [
             'description'         => $description,
             'input_schema'        => $schema,
             'required_scope'      => $scope,
             'requires_capability' => self::CAP,
-        ]);
+        ];
+        if (in_array($name, self::GATED_TOOLS, true)) {
+            // User confirmation (user-confirm-v1, core 2.2.7): the core gate asks the
+            // token's owner on the AI actions page; preview_{tool} builds their sentence.
+            $config['confirmation'] = ['required' => true, 'risk' => 'destructive', 'preview' => 'preview_' . $name];
+        }
+        $this->register_tool($name, $config);
+    }
+
+    /**
+     * Fail closed on a core without the user confirmation flow (< 2.2.7): a gated tool
+     * never runs there, and the agent's own confirm flag is never trusted.
+     *
+     * @param string $toolname Short name.
+     * @param array  $params   Arguments.
+     * @param array  $context  Context.
+     * @return array
+     */
+    public function execute_tool(string $toolname, array $params, array $context = []): array {
+        if (in_array($toolname, self::GATED_TOOLS, true) && !defined(module_base::class . '::CONFIRMATION_FLOW')) {
+            return ['error' => 'core_update_required', 'statusCode' => 501,
+                'message' => 'This action needs AI Connect for Moodle 2.2.7 or later (user confirmation). Nothing was done.'];
+        }
+        return parent::execute_tool($toolname, $params, $context);
     }
 
     protected function register_tools(): void {
         $id = ['type' => 'integer', 'description' => 'H5P activity id (h5pactivity.id)'];
         $cbid = ['type' => 'integer', 'description' => 'Content bank item id (contentbank_content.id)'];
         $libid = ['type' => 'integer', 'description' => 'H5P library id (h5p_libraries.id)'];
-        $confirm = ['type' => 'boolean', 'description' => 'Must be true to actually run; without it the tool only returns a preview'];
 
         // Activities.
         $this->tool('createContent', 'Create an H5P activity in a course (grade item, events and completion through Moodle\'s own create_module). '
@@ -154,9 +180,9 @@ class pro_module extends module_base {
         ], 'write');
         $this->tool(
             'deleteContent',
-            'Delete an H5P activity with its attempts and grades. Without confirm=true only a preview is returned.',
+            'Delete an H5P activity with its attempts and grades. The signed-in user must confirm it on the site first.',
             ['h5pactivityid'],
-            ['h5pactivityid' => $id, 'confirm' => $confirm],
+            ['h5pactivityid' => $id],
             'write'
         );
 
@@ -167,16 +193,16 @@ class pro_module extends module_base {
         ], 'read');
         $this->tool(
             'deleteUserAttempt',
-            'Delete one attempt of an H5P activity and regrade the user. Without confirm=true only a preview is returned.',
+            'Delete one attempt of an H5P activity and regrade the user. The signed-in user must confirm it on the site first.',
             ['h5pactivityid', 'attemptid'],
-            ['h5pactivityid' => $id, 'attemptid' => ['type' => 'integer'], 'confirm' => $confirm],
+            ['h5pactivityid' => $id, 'attemptid' => ['type' => 'integer']],
             'write'
         );
         $this->tool(
             'resetAllAttempts',
-            'Delete all attempts of an H5P activity (or of one user) and reset the grades. Without confirm=true only a preview is returned.',
+            'Delete all attempts of an H5P activity (or of one user) and reset the grades. The signed-in user must confirm it on the site first.',
             ['h5pactivityid'],
-            ['h5pactivityid' => $id, 'userid' => ['type' => 'integer'], 'confirm' => $confirm],
+            ['h5pactivityid' => $id, 'userid' => ['type' => 'integer']],
             'write'
         );
 
@@ -209,9 +235,9 @@ class pro_module extends module_base {
         ], 'write');
         $this->tool(
             'deleteContentBankItem',
-            'Delete a content bank item. Without confirm=true only a preview (incl. where it is used) is returned.',
+            'Delete a content bank item. The signed-in user must confirm it on the site first.',
             ['contentbankid'],
-            ['contentbankid' => $cbid, 'confirm' => $confirm],
+            ['contentbankid' => $cbid],
             'write'
         );
 
@@ -246,7 +272,7 @@ class pro_module extends module_base {
             'admin'
         );
         $this->tool('deleteLibrary', 'Site admin: delete an UNUSED H5P library (refused while content or other libraries use it). '
-            . 'Without confirm=true only a preview is returned.', ['libraryid'], ['libraryid' => $libid, 'confirm' => $confirm], 'admin');
+            . 'The signed-in user must confirm it on the site first.', ['libraryid'], ['libraryid' => $libid], 'admin');
     }
 
     // ------------------------------------------------------------------
@@ -611,7 +637,7 @@ class pro_module extends module_base {
     private static function preview(string $action, array $details): array {
         return ['executed' => false, 'confirmation_required' => true,
             'preview' => $action, 'details' => $details,
-            'message' => 'Nothing was changed. Show this to the user and call again with confirm=true only after the user agrees.'];
+            'message' => 'Nothing was changed.'];
     }
 
     // ------------------------------------------------------------------
@@ -1189,5 +1215,108 @@ class pro_module extends module_base {
         \core_h5p\api::delete_library(new \core_h5p\factory(), $lib);
         return ['executed' => true, 'deleted' => true, 'libraryid' => $libid,
             'library' => "{$lib->machinename} {$lib->majorversion}.{$lib->minorversion}.{$lib->patchversion}"];
+    }
+
+    // ------------------------------------------------------------------
+    // Confirmation previews (user-confirm-v1): validate + permission checks,
+    // no side effect; the sentence is in the user's language.
+    // ------------------------------------------------------------------
+
+    /**
+     * Preview: deleteContent.
+     *
+     * @param array $args Arguments.
+     * @param array $context Context.
+     * @return array
+     */
+    public function preview_deleteContent(array $args, array $context): array {
+        $p = $this->execute_deleteContent(['confirm' => false] + $args, $context);
+        if (isset($p['error'])) {
+            return $p;
+        }
+        [$instance, $course] = $this->managed_activity((int) $p['details']['h5pactivityid']);
+        $a = (object) ['name' => format_string($instance->name), 'course' => format_string($course->fullname),
+            'attempts' => (int) $p['details']['attempts']];
+        return ['summary' => ConfirmText::summary('deleteContent', 'confirm_deletecontent', $a),
+            'details' => [ConfirmText::line('confirm_deletecontent_detail', $a)], 'activity' => $p['details']];
+    }
+
+    /**
+     * Preview: deleteUserAttempt.
+     *
+     * @param array $args Arguments.
+     * @param array $context Context.
+     * @return array
+     */
+    public function preview_deleteUserAttempt(array $args, array $context): array {
+        $p = $this->execute_deleteUserAttempt(['confirm' => false] + $args, $context);
+        if (isset($p['error'])) {
+            return $p;
+        }
+        [$instance] = $this->managed_activity((int) $args['h5pactivityid']);
+        $user = \core_user::get_user((int) $p['details']['userid']);
+        $a = (object) ['user' => $user ? fullname($user) : (string) $p['details']['userid'], 'name' => format_string($instance->name),
+            'score' => (int) $p['details']['rawscore'] . '/' . (int) $p['details']['maxscore']];
+        return ['summary' => ConfirmText::summary('deleteUserAttempt', 'confirm_deleteattempt', $a),
+            'details' => [ConfirmText::line('confirm_deleteattempt_detail', $a)], 'attempt' => $p['details']];
+    }
+
+    /**
+     * Preview: resetAllAttempts.
+     *
+     * @param array $args Arguments.
+     * @param array $context Context.
+     * @return array
+     */
+    public function preview_resetAllAttempts(array $args, array $context): array {
+        $p = $this->execute_resetAllAttempts(['confirm' => false] + $args, $context);
+        if (isset($p['error'])) {
+            return $p;
+        }
+        [$instance] = $this->managed_activity((int) $p['details']['h5pactivityid']);
+        $uid = (int) ($p['details']['userid'] ?? 0);
+        $user = $uid ? \core_user::get_user($uid) : null;
+        $a = (object) ['count' => (int) $p['details']['attempts'], 'name' => format_string($instance->name),
+            'user' => $user ? fullname($user) : (string) $uid];
+        $key = $uid ? 'confirm_resetattempts_user' : 'confirm_resetattempts_all';
+        return ['summary' => ConfirmText::summary('resetAllAttempts', $key, $a),
+            'details' => [ConfirmText::line('confirm_resetattempts_detail')], 'attempts' => $p['details']];
+    }
+
+    /**
+     * Preview: deleteContentBankItem.
+     *
+     * @param array $args Arguments.
+     * @param array $context Context.
+     * @return array
+     */
+    public function preview_deleteContentBankItem(array $args, array $context): array {
+        $p = $this->execute_deleteContentBankItem(['confirm' => false] + $args, $context);
+        if (isset($p['error'])) {
+            return $p;
+        }
+        [$content] = self::load_cb_item((int) $args['contentbankid']);
+        $a = (object) ['name' => format_string($content->get_name()), 'uses' => (int) ($p['details']['used_in'] ?? 0)];
+        return ['summary' => ConfirmText::summary('deleteContentBankItem', 'confirm_deletecb', $a),
+            'details' => [ConfirmText::line('confirm_deletecb_detail', $a)], 'item' => $p['details']];
+    }
+
+    /**
+     * Preview: deleteLibrary.
+     *
+     * @param array $args Arguments.
+     * @param array $context Context.
+     * @return array
+     */
+    public function preview_deleteLibrary(array $args, array $context): array {
+        global $DB;
+        $p = $this->execute_deleteLibrary(['confirm' => false] + $args, $context);
+        if (isset($p['error'])) {
+            return $p;
+        }
+        $lib = $DB->get_record('h5p_libraries', ['id' => (int) $args['libraryid']], '*', MUST_EXIST);
+        $name = "{$lib->machinename} {$lib->majorversion}.{$lib->minorversion}";
+        return ['summary' => ConfirmText::summary('deleteLibrary', 'confirm_deletelibrary', $name),
+            'details' => [ConfirmText::line('confirm_deletelibrary_detail')], 'library' => $p['details']];
     }
 }
